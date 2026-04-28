@@ -153,8 +153,21 @@ def train(args: argparse.Namespace) -> None:
         optimizer, T_max=args.epochs, eta_min=args.lr * 0.01,
     )
 
-    best_val = math.inf
-    for epoch in range(1, args.epochs + 1):
+    # --- resume from checkpoint if it exists ---
+    start_epoch = 1
+    best_val    = math.inf
+    resume      = getattr(args, 'resume', True)
+    if resume and os.path.exists(args.save):
+        ckpt = torch.load(args.save, map_location=device)
+        model.load_state_dict(ckpt['state_dict'])
+        best_val    = ckpt['val_loss']
+        start_epoch = ckpt['epoch'] + 1
+        # fast-forward scheduler to match saved epoch
+        for _ in range(ckpt['epoch']):
+            scheduler.step()
+        print(f'Resumed from epoch {ckpt["epoch"]}  (best val {best_val:.4f})')
+
+    for epoch in range(start_epoch, args.epochs + 1):
         t0 = time.time()
 
         # ---- train ----
@@ -218,4 +231,5 @@ if __name__ == '__main__':
     p.add_argument('--workers',      type=int,   default=4)
     p.add_argument('--save',         type=str,   default='checkpoints/best.pt')
     p.add_argument('--no_pretrained',dest='pretrained', action='store_false', default=True)
+    p.add_argument('--no_resume',    dest='resume',     action='store_false', default=True)
     train(p.parse_args())
