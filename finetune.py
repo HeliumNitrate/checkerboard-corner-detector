@@ -126,9 +126,14 @@ class RealCornersDataset(Dataset):
         self.img_size = img_size
         self.augment  = augment
 
+        npz_dir = os.path.dirname(os.path.abspath(npz_path))
         for i in range(n):
+            raw_path = str(data[f"path_{i}"][0])
+            # Relative path ise npz'nin bulunduğu klasöre göre çöz
+            if not os.path.isabs(raw_path):
+                raw_path = os.path.join(npz_dir, raw_path)
             self.samples.append({
-                "path":     str(data[f"path_{i}"][0]),
+                "path":     raw_path,
                 "corners":  data[f"corners_{i}"],          # (N,2) OpenCV (x,y)
                 "img_size": tuple(data[f"img_size_{i}"]),  # (w, h) original
             })
@@ -237,11 +242,15 @@ def finetune(args: argparse.Namespace) -> None:
 
         model.train()
         train_loss = 0.0
-        for img, hmap, _ in train_loader:
+        for batch_i, (img, hmap, _) in enumerate(train_loader, 1):
             img, hmap = img.to(device), hmap.to(device)
             loss = focal_bce(model(img), hmap)
             optimizer.zero_grad(); loss.backward(); optimizer.step()
             train_loss += loss.item() * img.size(0)
+            if batch_i % 10 == 0 or batch_i == len(train_loader):
+                print(f'  batch {batch_i}/{len(train_loader)}  loss {loss.item():.4f}',
+                      end='\r', flush=True)
+        print()
         train_loss /= len(train_ds)
 
         model.eval()
