@@ -235,7 +235,7 @@ def finetune(args: argparse.Namespace) -> None:
         optimizer, T_max=args.epochs, eta_min=args.lr * 0.1)
 
     os.makedirs(os.path.dirname(args.ckpt_out), exist_ok=True)
-    best_val = math.inf
+    best_prec = 0.0
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
@@ -274,13 +274,13 @@ def finetune(args: argparse.Namespace) -> None:
               f'prec {prec:.3f}  rec {rec:.3f}  '
               f'lr {lr:.1e}  {dt:.0f}s')
 
-        if val_loss < best_val:
-            best_val = val_loss
+        if prec > best_prec:
+            best_prec = prec
             torch.save({'epoch': epoch, 'state_dict': model.state_dict(),
-                        'val_loss': val_loss}, args.ckpt_out)
-            print(f'  >> checkpoint saved  (val {best_val:.4f})')
+                        'val_loss': val_loss, 'val_prec': prec}, args.ckpt_out)
+            print(f'  >> checkpoint saved  (prec {best_prec:.4f}  rec {rec:.4f})')
 
-    print(f'\nBest val loss: {best_val:.4f}')
+    print(f'\nBest val prec: {best_prec:.4f}')
     print(f'Model: {args.ckpt_out}')
 
 
