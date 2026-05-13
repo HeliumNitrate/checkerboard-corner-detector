@@ -49,6 +49,12 @@ BOARD_SIZES = [
     (7, 11), (11, 7), (7, 3), (3, 7),
     (9, 6),  (6, 9),  (8, 6), (6, 8),
     (7, 6),  (6, 7),
+    # Chess boards (8×8 squares = 7×7 inner corners)
+    (7, 7),
+    # Calibration boards
+    (12, 7), (7, 12),
+    (10, 7), (7, 10),
+    (9, 7),  (7, 9),
 ]
 
 # Distorsiyon presetleri
