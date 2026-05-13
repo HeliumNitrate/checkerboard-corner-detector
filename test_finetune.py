@@ -124,14 +124,26 @@ def scale_corners_xy_to_rc(corners_xy, orig_w, orig_h, S=256):
     return np.stack([cy, cx], axis=1)
 
 
-def draw_result(img, gt_rc, pred_base, pred_ft, title):
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+def opencv_corners_rc(img256):
+    """256×256 görüntüde OpenCV köşe bul → (row, col) döndür."""
+    ok, corners_xy, _ = find_corners_opencv(img256)
+    if not ok or corners_xy is None:
+        return np.zeros((0, 2))
+    # find_corners_opencv (x,y) döndürüyor → (row=y, col=x)
+    return np.stack([corners_xy[:, 1], corners_xy[:, 0]], axis=1)
+
+
+def draw_result(img, gt_rc, pred_base, pred_ft, pred_ocv, title):
+    fig, axes = plt.subplots(1, 4, figsize=(24, 6))
     fig.suptitle(title, fontsize=9)
     for ax, pts, label, color in zip(
         axes,
-        [pred_base, pred_ft, gt_rc],
-        [f'model.pt ({len(pred_base)})', f'finetuned.pt ({len(pred_ft)})', f'GT ({len(gt_rc)})'],
-        ['red', 'cyan', 'lime']
+        [pred_ocv,  pred_base,               pred_ft,                gt_rc],
+        [f'OpenCV ({len(pred_ocv)})',
+         f'model.pt ({len(pred_base)})',
+         f'finetuned.pt ({len(pred_ft)})',
+         f'GT ({len(gt_rc)})'],
+        ['yellow', 'red', 'cyan', 'lime']
     ):
         ax.imshow(img, cmap='gray', vmin=0, vmax=255)
         if len(pts):
@@ -156,10 +168,10 @@ def test_from_folder(model_base, model_ft, args, device):
 
     preset = DISTORTION_PRESETS[args.distortion]
     print(f"Distorsiyon: {args.distortion}  c={preset['c']}  noise_std={args.noise_std}")
-    print(f"\n{'#':>3}  {'base prec':>10} {'base rec':>9}  {'ft prec':>9} {'ft rec':>8}  görüntü")
-    print('-' * 75)
+    print(f"\n{'#':>3}  {'ocv prec':>9} {'ocv rec':>8}  {'base prec':>10} {'base rec':>9}  {'ft prec':>9} {'ft rec':>8}  görüntü")
+    print('-' * 95)
 
-    bp_list, br_list, fp_list, fr_list = [], [], [], []
+    op_list, or_list, bp_list, br_list, fp_list, fr_list = [], [], [], [], [], []
 
     for rank, fname in enumerate(images):
         path = os.path.join(TEST_DIR, fname)
@@ -168,10 +180,10 @@ def test_from_folder(model_base, model_ft, args, device):
             print(f'{rank+1:>3}  OKUNAMADI  {fname}')
             continue
 
-        # OpenCV ile undistorted görüntüde köşeleri bul
+        # OpenCV ile undistorted görüntüde köşeleri bul (GT için)
         ok, corners_xy, board = find_corners_opencv(img)
         if not ok:
-            print(f'{rank+1:>3}  köşe bulunamadı (OpenCV)  {fname}')
+            print(f'{rank+1:>3}  köşe bulunamadı (OpenCV-GT)  {fname}')
             continue
 
         orig_h, orig_w = img.shape
@@ -181,7 +193,7 @@ def test_from_folder(model_base, model_ft, args, device):
             img, preset['c'], preset['d'], preset['r_max'], args.noise_std)
 
         # GT köşeleri de dönüştür
-        corners_rc = np.stack([corners_xy[:, 1], corners_xy[:, 0]], axis=1)  # (N,2) row,col
+        corners_rc = np.stack([corners_xy[:, 1], corners_xy[:, 0]], axis=1)
         corners_grid = corners_rc.reshape(-1, 1, 2)
         gt_dist_grid = distort_corners(corners_grid, center, PSN, preset['c'], preset['d'])
         gt_dist_rc   = gt_dist_grid.reshape(-1, 2)
@@ -192,28 +204,34 @@ def test_from_folder(model_base, model_ft, args, device):
         scale_c = IMG_SIZE / orig_w
         gt_256  = gt_dist_rc * np.array([scale_r, scale_c])
 
-        # Tahminler
+        # OpenCV — distorted görüntüde de dene
+        pred_ocv  = opencv_corners_rc(img256)
+
+        # CNN tahminleri
         hmap_base = predict_heatmap(model_base, img256, device)
         hmap_ft   = predict_heatmap(model_ft,   img256, device)
         pred_base = heatmap_to_corners(hmap_base, threshold=args.threshold)
         pred_ft   = heatmap_to_corners(hmap_ft,   threshold=args.threshold)
 
-        bp, br = pr_score(pred_base, gt_256)
-        fp, fr = pr_score(pred_ft,   gt_256)
+        op, or_ = pr_score(pred_ocv,  gt_256)
+        bp, br  = pr_score(pred_base, gt_256)
+        fp, fr  = pr_score(pred_ft,   gt_256)
+        op_list.append(op); or_list.append(or_)
         bp_list.append(bp); br_list.append(br)
         fp_list.append(fp); fr_list.append(fr)
-        print(f'{rank+1:>3}  {bp:>10.3f} {br:>9.3f}  {fp:>9.3f} {fr:>8.3f}  {fname}')
+        print(f'{rank+1:>3}  {op:>9.3f} {or_:>8.3f}  {bp:>10.3f} {br:>9.3f}  {fp:>9.3f} {fr:>8.3f}  {fname}')
 
         # Görsel
-        fig = draw_result(img256, gt_256, pred_base, pred_ft,
+        fig = draw_result(img256, gt_256, pred_base, pred_ft, pred_ocv,
                           f'{fname}  [{args.distortion}+noise{args.noise_std}]')
         fig.savefig(os.path.join(OUT_DIR, f'{rank+1:02d}_{fname}.png'),
                     dpi=120, bbox_inches='tight')
         plt.close(fig)
 
     if bp_list:
-        print('-' * 75)
-        print(f"{'ORT':>3}  {np.mean(bp_list):>10.3f} {np.mean(br_list):>9.3f}  "
+        print('-' * 95)
+        print(f"{'ORT':>3}  {np.mean(op_list):>9.3f} {np.mean(or_list):>8.3f}  "
+              f"{np.mean(bp_list):>10.3f} {np.mean(br_list):>9.3f}  "
               f"{np.mean(fp_list):>9.3f} {np.mean(fr_list):>8.3f}")
 
 
@@ -235,10 +253,10 @@ def test_from_npz(model_base, model_ft, args, device):
     indices = rng.choice(len(records), size=min(args.n, len(records)), replace=False)
 
     print(f"corners.npz'den {len(indices)} görüntü  (threshold={args.threshold})\n")
-    print(f"{'#':>3}  {'base prec':>10} {'base rec':>9}  {'ft prec':>9} {'ft rec':>8}  görüntü")
-    print('-' * 75)
+    print(f"{'#':>3}  {'ocv prec':>9} {'ocv rec':>8}  {'base prec':>10} {'base rec':>9}  {'ft prec':>9} {'ft rec':>8}  görüntü")
+    print('-' * 95)
 
-    bp_list, br_list, fp_list, fr_list = [], [], [], []
+    op_list, or_list, bp_list, br_list, fp_list, fr_list = [], [], [], [], [], []
 
     for rank, idx in enumerate(indices):
         r     = records[idx]
@@ -250,26 +268,31 @@ def test_from_npz(model_base, model_ft, args, device):
         img256 = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
         gt_rc  = scale_corners_xy_to_rc(r["corners"], orig_w, orig_h)
 
+        pred_ocv  = opencv_corners_rc(img256)
+
         hmap_base = predict_heatmap(model_base, img256, device)
         hmap_ft   = predict_heatmap(model_ft,   img256, device)
         pred_base = heatmap_to_corners(hmap_base, threshold=args.threshold)
         pred_ft   = heatmap_to_corners(hmap_ft,   threshold=args.threshold)
 
-        bp, br = pr_score(pred_base, gt_rc)
-        fp, fr = pr_score(pred_ft,   gt_rc)
+        op, or_ = pr_score(pred_ocv,  gt_rc)
+        bp, br  = pr_score(pred_base, gt_rc)
+        fp, fr  = pr_score(pred_ft,   gt_rc)
+        op_list.append(op); or_list.append(or_)
         bp_list.append(bp); br_list.append(br)
         fp_list.append(fp); fr_list.append(fr)
-        print(f'{rank+1:>3}  {bp:>10.3f} {br:>9.3f}  {fp:>9.3f} {fr:>8.3f}  '
+        print(f'{rank+1:>3}  {op:>9.3f} {or_:>8.3f}  {bp:>10.3f} {br:>9.3f}  {fp:>9.3f} {fr:>8.3f}  '
               f'{os.path.basename(r["path"])}')
 
-        fig = draw_result(img256, gt_rc, pred_base, pred_ft,
+        fig = draw_result(img256, gt_rc, pred_base, pred_ft, pred_ocv,
                           os.path.basename(r["path"]))
         fig.savefig(os.path.join(OUT_DIR, f'{rank+1:02d}_{os.path.basename(r["path"])}.png'),
                     dpi=120, bbox_inches='tight')
         plt.close(fig)
 
-    print('-' * 75)
-    print(f"{'ORT':>3}  {np.mean(bp_list):>10.3f} {np.mean(br_list):>9.3f}  "
+    print('-' * 95)
+    print(f"{'ORT':>3}  {np.mean(op_list):>9.3f} {np.mean(or_list):>8.3f}  "
+          f"{np.mean(bp_list):>10.3f} {np.mean(br_list):>9.3f}  "
           f"{np.mean(fp_list):>9.3f} {np.mean(fr_list):>8.3f}")
 
 
